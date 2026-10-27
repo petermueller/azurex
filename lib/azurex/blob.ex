@@ -11,12 +11,17 @@ defmodule Azurex.Blob do
   @typep optional_string :: String.t() | nil
   @typep optional_keyword :: keyword() | nil
 
-  def list_containers do
+  @spec list_containers(Config.config_overrides()) ::
+          {:ok, String.t()}
+          | {:error, HTTPoison.AsyncResponse.t() | HTTPoison.Error.t() | HTTPoison.Response.t()}
+  def list_containers(overrides \\ []) do
+    connection_params = Config.get_connection_params(overrides)
+
     %HTTPoison.Request{
-      url: Config.api_url() <> "/",
+      url: Config.api_url(connection_params) <> "/",
       params: [comp: "list"]
     }
-    |> Auth.authorize_request()
+    |> Auth.authorize_request("", connection_params)
     |> HTTPoison.request()
     |> case do
       {:ok, %{body: xml, status_code: 200}} -> {:ok, xml}
@@ -53,6 +58,15 @@ defmodule Azurex.Blob do
       iex> put_blob("filename.txt", "file contents", "text/plain", "container")
       :ok
 
+      iex> put_blob("filename.txt", "file contents", "text/plain", [container: "container"])
+      :ok
+
+      iex> put_blob("filename.txt", "file contents", "text/plain", [storage_account_name: "name", storage_account_key: "key"])
+      :ok
+
+      iex> put_blob("filename.txt", "file contents", "text/plain", [storage_account_connection_string: "AccountName=name;AccountKey=key", container: "container"])
+      :ok
+
       iex> put_blob("filename.txt", "file contents", "text/plain", nil, timeout: 10)
       :ok
 
@@ -64,37 +78,38 @@ defmodule Azurex.Blob do
           String.t(),
           binary() | {:stream, Enumerable.t()},
           optional_string,
-          optional_string,
+          Config.config_overrides(),
           keyword
         ) ::
           :ok
           | {:error, HTTPoison.AsyncResponse.t() | HTTPoison.Error.t() | HTTPoison.Response.t()}
-  def put_blob(name, blob, content_type, container \\ nil, params \\ [])
+  def put_blob(name, blob, content_type, overrides \\ [], params \\ [])
 
-  def put_blob(name, {:stream, bitstream}, content_type, container, params) do
+  def put_blob(name, {:stream, bitstream}, content_type, overrides, params) do
     content_type = content_type || "application/octet-stream"
 
     bitstream
     |> Stream.transform(
       fn -> [] end,
       fn chunk, acc ->
-        with {:ok, block_id} <- Block.put_block(container, chunk, name, params) do
+        with {:ok, block_id} <- Block.put_block(overrides, chunk, name, params) do
           {[], [block_id | acc]}
         end
       end,
       fn acc ->
-        Block.put_block_list(acc, container, name, content_type, params)
+        Block.put_block_list(acc, overrides, name, content_type, params)
       end
     )
     |> Stream.run()
   end
 
-  def put_blob(name, blob, content_type, container, params) do
+  def put_blob(name, blob, content_type, overrides, params) do
     content_type = content_type || "application/octet-stream"
+    connection_params = Config.get_connection_params(overrides)
 
     %HTTPoison.Request{
       method: :put,
-      url: get_url(container, name),
+      url: get_url(name, connection_params),
       params: params,
       body: blob,
       headers: [
@@ -104,7 +119,7 @@ defmodule Azurex.Blob do
       # is not applicable for the put request, so we set it to infinity
       options: [recv_timeout: :infinity]
     }
-    |> Auth.authorize_request(content_type)
+    |> Auth.authorize_request(content_type, connection_params)
     |> HTTPoison.request()
     |> case do
       {:ok, %{status_code: 201}} -> :ok
@@ -124,6 +139,12 @@ defmodule Azurex.Blob do
       iex> get_blob("filename.txt", "container")
       {:ok, "file contents"}
 
+      iex> get_blob("filename.txt", [storage_account_name: "name", storage_account_key: "key", container: "container"])
+      {:ok, "file contents"}
+
+      iex> get_blob("filename.txt", [storage_account_connection_string: "AccountName=name;AccountKey=key"])
+      {:ok, "file contents"}
+
       iex> get_blob("filename.txt", nil, timeout: 10)
       {:ok, "file contents"}
 
@@ -131,11 +152,11 @@ defmodule Azurex.Blob do
       {:error, %HTTPoison.Response{}}
 
   """
-  @spec get_blob(String.t(), optional_string, optional_keyword, optional_keyword) ::
+  @spec get_blob(String.t(), Config.config_overrides(), optional_keyword, optional_keyword) ::
           {:ok, binary()}
           | {:error, HTTPoison.AsyncResponse.t() | HTTPoison.Error.t() | HTTPoison.Response.t()}
-  def get_blob(name, container \\ nil, params \\ [], headers \\ []) do
-    blob_request(name, container, :get, params, headers)
+  def get_blob(name, overrides \\ [], params \\ [], headers \\ []) do
+    blob_request(name, overrides, :get, params, headers)
     |> HTTPoison.request()
     |> case do
       {:ok, %{body: blob, status_code: status_code}} when status_code in [200, 206] -> {:ok, blob}
@@ -147,11 +168,11 @@ defmodule Azurex.Blob do
   @doc """
   Checks if a blob exists, and returns metadata for the blob if it does
   """
-  @spec head_blob(String.t(), optional_string) ::
+  @spec head_blob(String.t(), Config.config_overrides(), keyword) ::
           {:ok, list}
           | {:error, :not_found | HTTPoison.Error.t() | HTTPoison.Response.t()}
-  def head_blob(name, container \\ nil, params \\ []) do
-    blob_request(name, container, :head, params)
+  def head_blob(name, overrides \\ [], params \\ []) do
+    blob_request(name, overrides, :head, params)
     |> HTTPoison.request()
     |> case do
       {:ok, %HTTPoison.Response{status_code: 200, headers: details}} -> {:ok, details}
@@ -164,22 +185,25 @@ defmodule Azurex.Blob do
   @doc """
   Copies a blob to a destination.
 
+  The same configuration options (connection string, container, ...) are applied to both source and destination.
+
   Note: Azure’s ‘[Copy Blob from URL](https://learn.microsoft.com/en-us/rest/api/storageservices/copy-blob-from-url)’
   operation has a maximum size of 256 MiB.
   """
-  @spec copy_blob(String.t(), String.t(), optional_string) ::
+  @spec copy_blob(String.t(), String.t(), Config.config_overrides()) ::
           {:ok, HTTPoison.Response.t()} | {:error, term()}
-  def copy_blob(source_name, destination_name, container \\ nil) do
+  def copy_blob(source_name, destination_name, overrides \\ []) do
     content_type = "application/octet-stream"
-    source_url = get_url(container, source_name)
+    connection_params = Config.get_connection_params(overrides)
+    source_url = get_url(source_name, connection_params)
     headers = [{"x-ms-copy-source", source_url}, {"content-type", content_type}]
 
     %HTTPoison.Request{
       method: :put,
-      url: get_url(container, destination_name),
+      url: get_url(destination_name, connection_params),
       headers: headers
     }
-    |> Auth.authorize_request(content_type)
+    |> Auth.authorize_request(content_type, connection_params)
     |> HTTPoison.request()
     |> case do
       {:ok, %HTTPoison.Response{status_code: 202} = resp} -> {:ok, resp}
@@ -188,10 +212,10 @@ defmodule Azurex.Blob do
     end
   end
 
-  @spec delete_blob(String.t(), optional_string()) ::
+  @spec delete_blob(String.t(), Config.config_overrides(), keyword) ::
           :ok | {:error, :not_found | HTTPoison.Error.t() | HTTPoison.Response.t()}
-  def delete_blob(name, container \\ nil, params \\ []) do
-    blob_request(name, container, :delete, params)
+  def delete_blob(name, overrides \\ [], params \\ []) do
+    blob_request(name, overrides, :delete, params)
     |> HTTPoison.request()
     |> case do
       {:ok, %HTTPoison.Response{status_code: 202}} -> :ok
@@ -201,15 +225,17 @@ defmodule Azurex.Blob do
     end
   end
 
-  defp blob_request(name, container, method, params, headers \\ [], options \\ []) do
+  defp blob_request(name, overrides, method, params, headers \\ [], options \\ []) do
+    connection_params = Config.get_connection_params(overrides)
+
     %HTTPoison.Request{
       method: method,
-      url: get_url(container, name),
+      url: get_url(name, connection_params),
       params: params,
       headers: headers,
       options: options
     }
-    |> Auth.authorize_request()
+    |> Auth.authorize_request("", connection_params)
   end
 
   @doc """
@@ -220,22 +246,27 @@ defmodule Azurex.Blob do
       iex> Azurex.Blob.list_blobs()
       {:ok, "\uFEFF<?xml ...."}
 
+      iex> Azurex.Blob.list_blobs(storage_account_name: "name", storage_account_key: "key", container: "container")
+      {:ok, "\uFEFF<?xml ...."}
+
       iex> Azurex.Blob.list_blobs()
       {:error, %HTTPoison.Response{}}
   """
-  @spec list_blobs(optional_string) ::
+  @spec list_blobs(Config.config_overrides()) ::
           {:ok, binary()}
           | {:error, HTTPoison.AsyncResponse.t() | HTTPoison.Error.t() | HTTPoison.Response.t()}
-  def list_blobs(container \\ nil, params \\ []) do
+  def list_blobs(overrides \\ [], params \\ []) do
+    connection_params = Config.get_connection_params(overrides)
+
     %HTTPoison.Request{
-      url: "#{Config.api_url()}/#{get_container(container)}",
+      url: get_url(connection_params),
       params:
         [
           comp: "list",
           restype: "container"
         ] ++ params
     }
-    |> Auth.authorize_request()
+    |> Auth.authorize_request("", connection_params)
     |> HTTPoison.request()
     |> case do
       {:ok, %{body: xml, status_code: 200}} -> {:ok, xml}
@@ -247,20 +278,20 @@ defmodule Azurex.Blob do
   @doc """
   Returns the url for a container (defaults to the one in `Azurex.Blob.Config`)
   """
-  @spec get_url(optional_string) :: String.t()
-  def get_url(container) do
-    "#{Config.api_url()}/#{get_container(container)}"
+  @spec get_url(keyword) :: String.t()
+  def get_url(connection_params) do
+    "#{Config.api_url(connection_params)}/#{get_container(connection_params)}"
   end
 
   @doc """
   Returns the url for a file in a container (defaults to the one in `Azurex.Blob.Config`)
   """
-  @spec get_url(optional_string, String.t()) :: String.t()
-  def get_url(container, blob_name) do
-    "#{get_url(container)}/#{blob_name}"
+  @spec get_url(String.t(), keyword) :: String.t()
+  def get_url(blob_name, connection_params) do
+    "#{get_url(connection_params)}/#{blob_name}"
   end
 
-  defp get_container(container) do
-    container || Config.default_container()
+  defp get_container(connection_params) do
+    Keyword.get(connection_params, :container) || Config.default_container()
   end
 end

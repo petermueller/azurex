@@ -17,9 +17,10 @@ defmodule Azurex.Blob.SharedAccessSignature.UserDelegationSAS do
         resource,
         {from, expiry},
         permissions,
-        storage_account_name
+        storage_account_name,
+        connection_params \\ []
       ) do
-    {:ok, user_delegation_key} = get_user_delegation_key(from, expiry)
+    {:ok, user_delegation_key} = get_user_delegation_key(from, expiry, connection_params)
 
     URI.encode_query(
       sv: sv(),
@@ -45,14 +46,14 @@ defmodule Azurex.Blob.SharedAccessSignature.UserDelegationSAS do
     )
   end
 
-  defp get_user_delegation_key(from, expiry) do
+  defp get_user_delegation_key(from, expiry, connection_params) do
     %HTTPoison.Request{
       method: :post,
-      url: Config.api_url() <> "/",
+      url: Config.api_url(connection_params) <> "/",
       body: create_user_delegation_request_body(from, expiry),
       params: [restype: "service", comp: "userdelegationkey"]
     }
-    |> Auth.authorize_request()
+    |> Auth.authorize_request("", connection_params)
     |> HTTPoison.request()
     |> case do
       {:ok, %{body: xml, status_code: 200}} -> {:ok, xml}

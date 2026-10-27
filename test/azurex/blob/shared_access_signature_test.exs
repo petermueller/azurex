@@ -40,6 +40,26 @@ defmodule Azurex.Blob.SharedAccessSignatureTest do
                  permissions: [:delete, :write, :add, :read]
                )
     end
+
+    test "defaults to parameters from overrides" do
+      url_with_env = sas_url(@container, @blob, from: @now)
+
+      connection_params = Keyword.put(delete_env(), :container, @container)
+      url_with_overrides = sas_url(connection_params, @blob, from: @now)
+
+      assert url_with_env == url_with_overrides
+    end
+
+    test "without overrides, operates on default container" do
+      env =
+        Application.get_env(:azurex, Azurex.Blob.Config)
+        |> Keyword.put(:default_container, @container)
+
+      # Reapply environment but with default container
+      Application.put_env(:azurex, Azurex.Blob.Config, env)
+
+      assert sas_url([], "/", from: @now) == sas_url(@container, "/", from: @now)
+    end
   end
 
   describe "managed identity configuration" do
@@ -87,6 +107,28 @@ defmodule Azurex.Blob.SharedAccessSignatureTest do
                  permissions: [:delete, :write, :add, :read]
                )
     end
+
+    test "defaults to parameters from overrides" do
+      url_with_env = sas_url(@container, @blob, from: @now)
+
+      # The token endpoint is still read from the application config
+      env = Application.get_env(:azurex, Azurex.Blob.Config)
+      Application.put_env(:azurex, Azurex.Blob.Config, Keyword.take(env, [:auth_url]))
+
+      connection_params = Keyword.put(env, :container, @container)
+      url_with_overrides = sas_url(connection_params, @blob, from: @now)
+
+      assert url_with_env == url_with_overrides
+    end
+  end
+
+  defp delete_env do
+    env = Application.get_env(:azurex, Azurex.Blob.Config)
+    container = env[:default_container]
+    Application.put_env(:azurex, Azurex.Blob.Config, [])
+
+    env
+    |> Keyword.put(:container, container)
   end
 
   defp stub_get_bearer_token_request(bypass, tenant_id) do
