@@ -30,7 +30,7 @@ defmodule Azurex.MixProject do
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:bypass, "~> 2.1", only: :test},
-      {:httpoison, "~> 1.8 or ~> 2.2"},
+      {:httpoison, "~> 1.8 or ~> 2.2 or ~> 3.0"},
       {:jason, "~> 1.4.4"},
       {:sweet_xml, "~> 0.7.5"}
     ]

@@ -8,6 +8,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ### Added/Changed
 
 - Added support for multiple Azure instances
+- Added support for HTTPoison 3 (hackney 4). HTTPoison 1.8 and 2.2+ remain supported.
 
 ### Fixed
 
